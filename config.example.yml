@@ -1,0 +1,9 @@
+debug: false
+log_directory: "/var/log/rorbotgo"
+
+discord:
+  token: "token"
+  command_prefix: "!"
+
+database:
+  path: "rorbotgo.db"
