@@ -22,6 +22,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"rorbotgo/config"
 	"rorbotgo/internal/models"
 	"rorbotgo/rornet2"
 )
@@ -44,16 +45,18 @@ type Server struct {
 // without a user-initiated /disconnect (e.g. crash, timeout). Returns an error
 // if the TCP handshake fails.
 func newServer(model *models.Server, session *discordgo.Session, onDisconnect func()) (*Server, error) {
-	slog.Debug("connecting to RoR server",
+	slog.Debug("connecting to server",
 		"name", model.Name,
 		"host", model.Host,
 		"port", model.Port,
 		"channel_id", model.ChannelID,
 	)
 
-	client := rornet2.NewClient(model.Host, model.Port, "RoRBot", model.Password, "en-US")
+	cfg := config.Get().Bot
+
+	client := rornet2.NewClient(model.Host, model.Port, cfg.Username, model.Password, cfg.Language, cfg.Token)
 	if err := client.Connect(); err != nil {
-		slog.Error("failed to connect to RoR server",
+		slog.Error("failed to connect to server",
 			"name", model.Name,
 			"host", model.Host,
 			"port", model.Port,
@@ -62,7 +65,7 @@ func newServer(model *models.Server, session *discordgo.Session, onDisconnect fu
 		return nil, err
 	}
 
-	slog.Info("RoR server connected",
+	slog.Info("server connected",
 		"name", model.Name,
 		"host", model.Host,
 		"port", model.Port,
@@ -82,7 +85,7 @@ func newServer(model *models.Server, session *discordgo.Session, onDisconnect fu
 
 // Disconnect cleanly shuts down the RoRnet connection.
 func (s *Server) Disconnect() {
-	slog.Info("disconnecting from RoR server",
+	slog.Info("disconnecting from server",
 		"name", s.Model.Name,
 		"host", s.Model.Host,
 		"port", s.Model.Port,
@@ -93,6 +96,10 @@ func (s *Server) Disconnect() {
 // IsConnected reports whether the underlying RoRnet client is connected.
 func (s *Server) IsConnected() bool {
 	return s.client.IsConnected()
+}
+
+func (s *Server) SendCommand(cmd string) error {
+	return nil
 }
 
 // SendChat forwards a chat message from Discord to the RoR server.
@@ -113,13 +120,13 @@ func (s *Server) relayEvents() {
 		switch event.Kind {
 		case rornet2.EventDisconnect:
 			if event.Err != nil {
-				slog.Warn("RoR server connection lost",
+				slog.Warn("server connection lost",
 					"name", name,
 					"err", event.Err,
 				)
 				s.chanSend(channelID, fmt.Sprintf("**[%s]** Connection lost — %s", name, event.Err))
 			} else {
-				slog.Info("RoR server disconnected cleanly", "name", name)
+				slog.Info("server disconnected cleanly without errors", "name", name)
 				s.chanSend(channelID, fmt.Sprintf("**[%s]** Disconnected from RoR server.", name))
 			}
 			// Notify the Manager so it removes this entry from its active map.
@@ -162,7 +169,7 @@ func (s *Server) relayEvents() {
 				playerName = rornet2.CString(event.UserInfo.Username[:])
 				s.storeUser(uint32(event.Source), event.UserInfo.UniqueID, playerName)
 			}
-			slog.Info("player joined RoR server",
+			slog.Info("player joined server",
 				"name", name,
 				"player", playerName,
 				"source", event.Source,
@@ -182,7 +189,7 @@ func (s *Server) relayEvents() {
 			s.chanSend(channelID, fmt.Sprintf("**[%s]** :red_circle: **%s** left.", name, playerName))
 
 		case rornet2.EventError:
-			slog.Warn("non-fatal RoR error", "name", name, "err", event.Err)
+			slog.Warn("unexpected server error", "name", name, "err", event.Err)
 		}
 	}
 
@@ -221,7 +228,7 @@ func (s *Server) username(id uint32) string {
 // chanSend sends a message to a Discord channel and logs any error.
 func (s *Server) chanSend(channelID, content string) {
 	if _, err := s.session.ChannelMessageSend(channelID, content); err != nil {
-		slog.Error("failed to send Discord message",
+		slog.Error("failed to send discord message",
 			"name", s.Model.Name,
 			"channel_id", channelID,
 			"err", err,

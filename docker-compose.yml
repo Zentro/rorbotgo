@@ -1,0 +1,12 @@
+services:
+  rorbotgo:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./config.yml:/etc/rorbotgo/config.yml:ro
+      - rorbotgo-data:/var/lib/rorbotgo
+      - rorbotgo-logs:/var/log/rorbotgo
+
+volumes:
+  rorbotgo-data:
+  rorbotgo-logs:

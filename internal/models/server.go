@@ -17,7 +17,6 @@ package models
 
 import "time"
 
-// Server represents a RoR server entry stored in the database.
 type Server struct {
 	ID        int64
 	Name      string

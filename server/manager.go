@@ -16,6 +16,7 @@
 package server
 
 import (
+	"strings"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -86,6 +87,11 @@ func (m *Manager) Commands() []*discordgo.ApplicationCommand {
 			Name:        "list_servers",
 			Description: "List all registered servers in this guild",
 		},
+		{
+			Name:	     "exec",
+			Description: "Execute a command on the server from this guild",
+			DefaultMemberPermissions: func(i int64) *int64 { return &i }(discordgo.PermissionAdministrator),
+		},
 	}
 }
 
@@ -94,7 +100,7 @@ func (m *Manager) DisconnectAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	slog.Info("disconnecting all active RoR servers", "count", len(m.servers))
+	slog.Info("disconnecting", "count", len(m.servers))
 	for _, s := range m.servers {
 		s.Disconnect()
 	}
@@ -127,6 +133,8 @@ func (m *Manager) handleInteraction(s *discordgo.Session, i *discordgo.Interacti
 		m.handleDeleteServer(s, i)
 	case "list_servers":
 		m.handleListServers(s, i)
+	case "exec":
+		m.handleExec(s, i)
 	default:
 		slog.Warn("unhandled slash command", "command", data.Name)
 	}
@@ -195,7 +203,7 @@ func (m *Manager) handleConnect(s *discordgo.Session, i *discordgo.InteractionCr
 	m.mu.RUnlock()
 	if active {
 		slog.Debug("connect rejected: already active", "channel_id", channelID)
-		respond(s, i, "Already connected to a RoR server on this channel.")
+		respond(s, i, "Already connected to a server on this channel.")
 		return
 	}
 
@@ -212,8 +220,8 @@ func (m *Manager) handleConnect(s *discordgo.Session, i *discordgo.InteractionCr
 		return
 	}
 
-	// Acknowledge immediately — the TCP handshake may take several seconds and
-	// Discord invalidates the interaction token after 3 seconds.
+	// Acknowledge immediately as the TCP handshake may take several seconds and
+	// Discord invalidates the interaction token after 3ish seconds.
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	}); err != nil {
@@ -293,7 +301,7 @@ func (m *Manager) handleDisconnect(s *discordgo.Session, i *discordgo.Interactio
 		"channel_id", channelID,
 	)
 	srv.Disconnect()
-	respond(s, i, "Disconnected from RoR server.")
+	respond(s, i, "Disconnected from server.")
 }
 
 func (m *Manager) handleDeleteServer(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -356,15 +364,19 @@ func (m *Manager) handleListServers(s *discordgo.Session, i *discordgo.Interacti
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	msg := "**Registered RoR servers:**\n"
+	var msg strings.Builder; msg.WriteString("**Registered servers:**\n")
 	for _, sv := range servers {
 		status := "disconnected"
 		if _, ok := m.servers[sv.ChannelID]; ok {
 			status = "connected"
 		}
-		msg += fmt.Sprintf("• **%s** — `%s:%d` — <#%d> — %s\n", sv.Name, sv.Host, sv.Port, sv.ChannelID, status)
+		fmt.Fprintf(&msg, "• **%s** — `%s:%d` — <#%d> — %s\n", sv.Name, sv.Host, sv.Port, sv.ChannelID, status)
 	}
-	respond(s, i, msg)
+	respond(s, i, msg.String())
+}
+
+func (m *Manager) handleExec(s *discordgo.Session, i *discordgo.InteractionCreate) {
+
 }
 
 // --------------------------------------------------------------------------
@@ -388,14 +400,14 @@ func (m *Manager) handleMessageCreate(s *discordgo.Session, msg *discordgo.Messa
 	}
 
 	content := fmt.Sprintf("[Discord/%s] %s", msg.Author.Username, msg.Content)
-	slog.Debug("relaying Discord message to RoR server",
+	slog.Debug("relaying discord message to server",
 		"name", srv.Model.Name,
 		"author", msg.Author.Username,
 		"message", msg.Content,
 	)
 
 	if err := srv.SendChat(content); err != nil {
-		slog.Warn("failed to relay Discord message to RoR server",
+		slog.Warn("failed to relay discord message to server",
 			"name", srv.Model.Name,
 			"author", msg.Author.Username,
 			"err", err,

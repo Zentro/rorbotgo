@@ -23,6 +23,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"rorbotgo/system"
 )
 
 // EventKind identifies the type of event emitted by a Client.
@@ -47,7 +49,7 @@ type Event struct {
 	Err      error     // EventError / EventDisconnect
 }
 
-// Client manages a single TCP connection to a RoR server and runs the receive
+// Client manages a single TCP connection to a server and runs the receive
 // loop in its own goroutine. Each server in the bot gets one Client.
 type Client struct {
 	host     string
@@ -55,6 +57,7 @@ type Client struct {
 	username string
 	password string
 	language string
+	token	 string
 
 	mu        sync.Mutex
 	conn      net.Conn
@@ -69,13 +72,14 @@ type Client struct {
 }
 
 // NewClient creates a new, unconnected Client.
-func NewClient(host string, port int, username, password, language string) *Client {
+func NewClient(host string, port int, username, password, language string, token string) *Client {
 	return &Client{
 		host:     host,
 		port:     port,
 		username: username,
 		password: password,
 		language: language,
+		token: 	  token,
 		Events:   make(chan Event, 64),
 		stop:     make(chan struct{}),
 	}
@@ -93,7 +97,7 @@ func (c *Client) Connect() error {
 	c.connected = true
 	c.mu.Unlock()
 
-	slog.Info("connected to RoR server", "host", c.host, "port", c.port)
+	slog.Info("connected to server", "host", c.host, "port", c.port)
 
 	if err := c.handshake(); err != nil {
 		conn.Close()
@@ -124,7 +128,7 @@ func (c *Client) Disconnect() {
 	_ = c.sendPacket(uint32(MSG2_USER_LEAVE), c.uniqueID, 0, nil)
 	close(c.stop)
 	conn.Close()
-	slog.Info("disconnected from RoR server", "host", c.host, "port", c.port)
+	slog.Info("disconnected from server", "host", c.host, "port", c.port)
 }
 
 // IsConnected reports whether the client currently has an active connection.
@@ -144,12 +148,12 @@ func (c *Client) SendChat(message string) error {
 // --------------------------------------------------------------------------
 
 func (c *Client) handshake() error {
-	// 1. Send MSG2_HELLO with the protocol version string.
+	// Send MSG2_HELLO with the protocol version string.
 	if err := c.sendPacket(uint32(MSG2_HELLO), 0, 0, []byte(Version)); err != nil {
 		return fmt.Errorf("send hello: %w", err)
 	}
 
-	// 2. Expect MSG2_HELLO back with ServerInfo payload.
+	// Expect MSG2_HELLO back with ServerInfo payload.
 	hdr, payload, err := c.readPacket()
 	if err != nil {
 		return fmt.Errorf("read server hello: %w", err)
@@ -176,8 +180,9 @@ func (c *Client) handshake() error {
 	SetCString(ui.Username[:], c.username)
 	SetCString(ui.ServerPassword[:], c.password)
 	SetCString(ui.Language[:], c.language)
+	SetCString(ui.UserToken[:], c.token)
 	SetCString(ui.ClientName[:], "RoRBot")
-	SetCString(ui.ClientVersion[:], "2022.12")
+	SetCString(ui.ClientVersion[:], system.Version)
 	SetCString(ui.SessionType[:], "normal")
 	ui.SlotNum = -1
 

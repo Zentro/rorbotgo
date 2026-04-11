@@ -61,8 +61,8 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "run in debug mode")
-	rootCmd.PersistentFlags().StringVar(&configPath, "config", config.DefaultLocation, "set the location for the config file")
+	rootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "run in debug mode")
+	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", config.DefaultLocation, "set the location for the config file")
 	rootCmd.AddCommand(versionCmd)
 }
 
