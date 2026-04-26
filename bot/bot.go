@@ -30,14 +30,18 @@ import (
 
 // Bot holds the Discord session and coordinates startup and shutdown.
 type Bot struct {
-	session        *discordgo.Session
-	db             *database.Database
-	manager        *server.Manager
+	// session is the Discord session used to interact with the Discord API.
+	session *discordgo.Session
+	// db is the database used to store server state.
+	db *database.Database
+	// manager is the server manager used to handle Discord events.
+	manager *server.Manager
+	// registeredCmds is a map of registered slash commands, keyed by command name.
 	registeredCmds map[string][]*discordgo.ApplicationCommand
 }
 
-// New creates a Bot from the provided configuration and database.
-func New(cfg *config.Configuration, db *database.Database) (*Bot, error) {
+// NewBot creates a Bot from the provided configuration and database.
+func NewBot(cfg *config.Configuration, db *database.Database) (*Bot, error) {
 	session, err := discordgo.New("Bot " + cfg.Discord.Token)
 	if err != nil {
 		return nil, err
@@ -57,8 +61,7 @@ func New(cfg *config.Configuration, db *database.Database) (*Bot, error) {
 	return b, nil
 }
 
-// Start opens the Discord gateway, registers slash commands, then blocks until
-// SIGINT or SIGTERM is received.
+// Start opens the Discord gateway, registers slash commands.
 func (b *Bot) Start() error {
 	if err := b.session.Open(); err != nil {
 		return err
@@ -81,10 +84,10 @@ func (b *Bot) Start() error {
 }
 
 // registerCommands registers slash commands as application commands.
-// Set RORBOTGO_GUILD_ID to a guild ID for instant guild-scoped registration
+// Set RORBOT_GUILD_ID to a guild ID for instant guild-scoped registration
 // during development (global commands can take up to an hour to propagate).
 func (b *Bot) registerCommands() error {
-	guildID := os.Getenv("RORBOTGO_GUILD_ID")
+	guildID := os.Getenv("RORBOT_GUILD_ID")
 	var registered []*discordgo.ApplicationCommand
 	for _, cmd := range b.manager.Commands() {
 		reg, err := b.session.ApplicationCommandCreate(b.session.State.User.ID, guildID, cmd)
@@ -98,6 +101,7 @@ func (b *Bot) registerCommands() error {
 	return nil
 }
 
+// cleanupCommands deletes all registered slash commands.
 func (b *Bot) cleanupCommands() {
 	for guildID, cmds := range b.registeredCmds {
 		for _, cmd := range cmds {

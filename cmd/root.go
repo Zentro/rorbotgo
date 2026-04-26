@@ -78,7 +78,7 @@ func rootCmdRun(cmd *cobra.Command, _ []string) error {
 	}
 	defer db.Close()
 
-	b, err := bot.New(cfg, db)
+	b, err := bot.NewBot(cfg, db)
 	if err != nil {
 		slog.Error("could not create bot", "error", err)
 		return err

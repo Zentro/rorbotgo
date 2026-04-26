@@ -22,29 +22,29 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"rorbotgo/client"
 	"rorbotgo/config"
 	"rorbotgo/internal/models"
-	"rorbotgo/rornet2"
 )
 
 // Server represents one active RoR server connection and its Discord binding.
-// Each instance runs its own goroutine (via relayEvents) that forwards RoRnet
+// Each instance runs its own goroutine (via listenForServerEvents) that forwards RoRnet
 // events to the associated Discord channel.
 type Server struct {
 	Model        *models.Server
-	client       *rornet2.Client
+	client       *client.Client
 	session      *discordgo.Session
-	onDisconnect func() // called by relayEvents on unexpected server-side disconnect
+	onDisconnect func() // called by listenForServerEvents on unexpected server-side disconnect
 
-	usersMu sync.RWMutex
-	users   map[uint32]string // uniqueID → username
+	usersLock sync.RWMutex
+	users     map[uint32]string // uniqueID → username
 }
 
-// newServer creates a Server, connects the RoRnet client, and starts the event
+// NewServer creates a Server, connects the client, and starts the event
 // relay goroutine. onDisconnect is invoked when the server drops the connection
 // without a user-initiated /disconnect (e.g. crash, timeout). Returns an error
 // if the TCP handshake fails.
-func newServer(model *models.Server, session *discordgo.Session, onDisconnect func()) (*Server, error) {
+func NewServer(model *models.Server, session *discordgo.Session, onDisconnect func()) (*Server, error) {
 	slog.Debug("connecting to server",
 		"name", model.Name,
 		"host", model.Host,
@@ -54,7 +54,7 @@ func newServer(model *models.Server, session *discordgo.Session, onDisconnect fu
 
 	cfg := config.Get().Bot
 
-	client := rornet2.NewClient(model.Host, model.Port, cfg.Username, model.Password, cfg.Language, cfg.Token)
+	client := client.NewClient(model.Host, model.Port, cfg.Username, model.Password, cfg.Language, cfg.Token)
 	if err := client.Connect(); err != nil {
 		slog.Error("failed to connect to server",
 			"name", model.Name,
@@ -79,13 +79,24 @@ func newServer(model *models.Server, session *discordgo.Session, onDisconnect fu
 		onDisconnect: onDisconnect,
 		users:        make(map[uint32]string),
 	}
-	go s.relayEvents()
+	go s.listenForServerEvents()
 	return s, nil
 }
 
-// Disconnect cleanly shuts down the RoRnet connection.
+func (s *Server) ID() string {
+	return fmt.Sprintf("%d", s.Model.ID)
+}
+
+func (s *Server) ChannelID() string {
+	return fmt.Sprintf("%d", s.Model.ChannelID)
+}
+
+func (s *Server) Log() *slog.Logger {
+	return slog.With("server", s.ID())
+}
+
 func (s *Server) Disconnect() {
-	slog.Info("disconnecting from server",
+	s.Log().Info("disconnecting from server",
 		"name", s.Model.Name,
 		"host", s.Model.Host,
 		"port", s.Model.Port,
@@ -93,7 +104,6 @@ func (s *Server) Disconnect() {
 	s.client.Disconnect()
 }
 
-// IsConnected reports whether the underlying RoRnet client is connected.
 func (s *Server) IsConnected() bool {
 	return s.client.IsConnected()
 }
@@ -108,100 +118,12 @@ func (s *Server) SendChat(message string) error {
 	return s.client.SendChat(message)
 }
 
-// relayEvents drains the rornet2 event channel and posts messages to Discord.
-// Runs for the lifetime of the connection; returns when the client disconnects.
-func (s *Server) relayEvents() {
-	channelID := fmt.Sprintf("%d", s.Model.ChannelID)
-	name := s.Model.Name
-
-	slog.Debug("relay goroutine started", "name", name, "channel_id", s.Model.ChannelID)
-
-	for event := range s.client.Events {
-		switch event.Kind {
-		case rornet2.EventDisconnect:
-			if event.Err != nil {
-				slog.Warn("server connection lost",
-					"name", name,
-					"err", event.Err,
-				)
-				s.chanSend(channelID, fmt.Sprintf("**[%s]** Connection lost — %s", name, event.Err))
-			} else {
-				slog.Info("server disconnected cleanly without errors", "name", name)
-				s.chanSend(channelID, fmt.Sprintf("**[%s]** Disconnected from RoR server.", name))
-			}
-			// Notify the Manager so it removes this entry from its active map.
-			// This covers unexpected drops (crash, timeout, server shutdown)
-			// where the user never ran /disconnect.
-			if s.onDisconnect != nil {
-				s.onDisconnect()
-			}
-			slog.Debug("relay goroutine exiting", "name", name)
-			return
-
-		case rornet2.EventUserSync:
-			if event.UserInfo != nil {
-				uname := rornet2.CString(event.UserInfo.Username[:])
-				s.storeUser(uint32(event.Source), event.UserInfo.UniqueID, uname)
-				slog.Debug("synced existing user",
-					"name", name,
-					"source", event.Source,
-					"unique_id", event.UserInfo.UniqueID,
-					"username", uname,
-				)
-			}
-
-		case rornet2.EventMessage:
-			if event.Message == "" {
-				continue
-			}
-			who := s.username(uint32(event.Source))
-			slog.Debug("relaying chat message",
-				"name", name,
-				"source", event.Source,
-				"who", who,
-				"message", event.Message,
-			)
-			s.chanSend(channelID, fmt.Sprintf("**[%s]** %s: %s", name, who, event.Message))
-
-		case rornet2.EventUserJoin:
-			playerName := fmt.Sprintf("User %d", event.Source)
-			if event.UserInfo != nil {
-				playerName = rornet2.CString(event.UserInfo.Username[:])
-				s.storeUser(uint32(event.Source), event.UserInfo.UniqueID, playerName)
-			}
-			slog.Info("player joined server",
-				"name", name,
-				"player", playerName,
-				"source", event.Source,
-			)
-			s.chanSend(channelID, fmt.Sprintf("**[%s]** :green_circle: **%s** joined.", name, playerName))
-
-		case rornet2.EventUserLeave:
-			playerName := s.username(uint32(event.Source))
-			s.usersMu.Lock()
-			delete(s.users, uint32(event.Source))
-			s.usersMu.Unlock()
-			slog.Info("player left RoR server",
-				"name", name,
-				"player", playerName,
-				"source", event.Source,
-			)
-			s.chanSend(channelID, fmt.Sprintf("**[%s]** :red_circle: **%s** left.", name, playerName))
-
-		case rornet2.EventError:
-			slog.Warn("unexpected server error", "name", name, "err", event.Err)
-		}
-	}
-
-	slog.Debug("relay goroutine: event channel closed", "name", name)
-}
-
 // storeUser writes a username under both the header source ID and the struct
 // UniqueID, because different server versions populate different fields.
 // Zero values are skipped.
 func (s *Server) storeUser(source, uniqueID uint32, name string) {
-	s.usersMu.Lock()
-	defer s.usersMu.Unlock()
+	s.usersLock.Lock()
+	defer s.usersLock.Unlock()
 	if source != 0 {
 		s.users[source] = name
 	}
@@ -216,22 +138,11 @@ func (s *Server) username(id uint32) string {
 	if id == 0 || int32(id) < 0 {
 		return "Server"
 	}
-	s.usersMu.RLock()
+	s.usersLock.RLock()
 	name, ok := s.users[id]
-	s.usersMu.RUnlock()
+	s.usersLock.RUnlock()
 	if ok {
 		return name
 	}
 	return fmt.Sprintf("User %d", id)
-}
-
-// chanSend sends a message to a Discord channel and logs any error.
-func (s *Server) chanSend(channelID, content string) {
-	if _, err := s.session.ChannelMessageSend(channelID, content); err != nil {
-		slog.Error("failed to send discord message",
-			"name", s.Model.Name,
-			"channel_id", channelID,
-			"err", err,
-		)
-	}
 }

@@ -16,6 +16,7 @@
 package system
 
 var (
-	Version   = "develop"
-	BuildTime = ""
+	Version       = "develop"
+	BuildTime     = ""
+	RoRNetVersion = "RoRnet_2.45"
 )

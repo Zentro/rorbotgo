@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-package rornet2
+package client
 
 import (
 	"encoding/binary"
@@ -31,38 +31,63 @@ import (
 type EventKind int
 
 const (
-	EventConnect    EventKind = iota // client successfully completed the handshake
-	EventDisconnect                  // connection closed (clean or error)
-	EventMessage                     // UTF-8 chat message received
-	EventUserJoin                    // a player joined the server
-	EventUserLeave                   // a player left the server
-	EventUserSync                    // existing player info received on initial connect (track, don't announce)
-	EventError                       // a non-fatal error occurred
+	// Client successfully completed the handshake
+	EventConnect EventKind = iota
+	// Connection closed (clean or error)
+	EventDisconnect
+	// UTF-8 chat message received
+	EventMessage
+	// A player joined the server
+	EventUserJoin
+	// A player left the server
+	EventUserLeave
+	// Existing player info received on initial connect (track, don't announce)
+	EventUserSync
+	// A stream was registered by a player
+	EventStreamRegister
+	// A non-fatal error occurred
+	EventError
 )
 
 // Event is emitted on the Client.Events channel for every notable occurrence.
 type Event struct {
-	Kind     EventKind
-	Source   int32
-	Message  string    // EventMessage: chat text
-	UserInfo *UserInfo // EventUserJoin: player info
-	Err      error     // EventError / EventDisconnect
+	// The type of event
+	Kind EventKind
+	// The source of the event (e.g. player ID)
+	Source int32
+	// The message associated with the event (e.g. chat text)
+	Message string
+	// The user info associated with the event (e.g. player info)
+	UserInfo *UserInfo
+	// The stream register info associated with the event
+	StreamRegister *StreamRegister
+	// The error associated with the event (e.g. connection error)
+	Err error
 }
 
 // Client manages a single TCP connection to a server and runs the receive
 // loop in its own goroutine. Each server in the bot gets one Client.
 type Client struct {
-	host     string
-	port     int
+	// The host to connect to
+	host string
+	// The port to connect to
+	port int
+	// The username
 	username string
+	// The password
 	password string
+	// The language
 	language string
-	token	 string
+	// The token to use for authentication
+	token string
 
-	mu        sync.Mutex
-	conn      net.Conn
+	mu sync.Mutex
+	// The connection to the server
+	conn net.Conn
+	// Whether the client is connected to the server
 	connected bool
-	uniqueID  uint32
+	// The unique ID assigned to this client by the server
+	uniqueID uint32
 
 	// Events receives all events from this client. The caller must drain it;
 	// a full channel will block the receive loop.
@@ -71,7 +96,7 @@ type Client struct {
 	stop chan struct{}
 }
 
-// NewClient creates a new, unconnected Client.
+// NewClient creates a new Client.
 func NewClient(host string, port int, username, password, language string, token string) *Client {
 	return &Client{
 		host:     host,
@@ -79,7 +104,7 @@ func NewClient(host string, port int, username, password, language string, token
 		username: username,
 		password: password,
 		language: language,
-		token: 	  token,
+		token:    token,
 		Events:   make(chan Event, 64),
 		stop:     make(chan struct{}),
 	}
@@ -297,6 +322,10 @@ func (c *Client) processPacket(hdr Header, payload []byte) {
 		if source > 100000 {
 			source = -1
 		}
+		if c.uniqueID == uint32(source) {
+			// Ignore our own chat messages echoed back by the server.
+			return
+		}
 		// RoR sends chat as a null-terminated C string; strip the terminator.
 		msg := CString(payload)
 		slog.Debug("received chat packet", "source", source, "len", len(payload), "message", msg)
@@ -326,15 +355,28 @@ func (c *Client) processPacket(hdr Header, payload []byte) {
 		}
 		c.emit(Event{Kind: EventUserSync, Source: hdr.Source, UserInfo: &ui})
 
+	case MSG2_STREAM_REGISTER:
+		var sr StreamRegister
+		if err := UnmarshalBinary(payload, &sr); err != nil {
+			slog.Warn("failed to parse StreamRegister packet", "err", err)
+			return
+		}
+		slog.Debug("stream register",
+			"source", hdr.Source,
+			"stream_id", hdr.StreamID,
+			"type", sr.Type,
+			"name", CString(sr.Name[:]),
+		)
+		c.emit(Event{Kind: EventStreamRegister, Source: hdr.Source, StreamRegister: &sr})
+
 	// Explicitly ignored packet types.
 	case MSG2_STREAM_DATA,
 		MSG2_STREAM_DATA_DISCARDABLE,
-		MSG2_STREAM_REGISTER,
 		MSG2_STREAM_REGISTER_RESULT,
 		MSG2_STREAM_UNREGISTER,
 		MSG2_NETQUALITY,
 		MSG2_GAME_CMD:
-		// no-op
+		// ignore for now
 
 	default:
 		slog.Debug("unhandled packet", "command", hdr.Command, "source", hdr.Source)

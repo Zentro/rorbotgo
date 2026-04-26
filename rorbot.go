@@ -24,7 +24,7 @@ import "rorbotgo/cmd"
 // │   └── config.go
 // ├── system
 // │   └── const.go
-// ├── rornet2
+// ├── client
 // │   ├── constants.go
 // │   ├── structs.go
 // │   └── client.go

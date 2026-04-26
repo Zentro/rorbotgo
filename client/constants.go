@@ -13,10 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-package rornet2
+package client
+
+import (
+	"rorbotgo/system"
+)
 
 // Version is the RoRnet protocol version string sent during handshake.
-const Version = "RoRnet_2.45"
+var Version = system.RoRNetVersion
 
 // MessageType represents the command field in a RoRnet packet header.
 type MessageType uint32
